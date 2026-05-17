@@ -1,0 +1,14 @@
+# Patch placeholder — implementation pending.
+#
+# Target file:  audio/out/ao_audiotrack.c  (in mpv-player/mpv master,
+#               cloned by buildscripts into buildscripts/deps/mpv/)
+# Purpose:      Add ENCODING_AC3 / ENCODING_E_AC3 direct-AudioTrack paths
+#               on Android TV devices that don't implement ENCODING_IEC61937.
+# Spec:         /docs/handoff/2026-05-17-ao_audiotrack-ac3-passthrough.md
+#
+# The next chat that picks this up should produce a real unified diff
+# here (e.g. via `git diff` against the upstream master at
+# buildscripts/include/depinfo.sh's pinned ref). Until that diff is in
+# place, mpv.sh's `git apply --check` will fail loudly and the build
+# will stop — that's intentional, so an empty placeholder never silently
+# ships as a broken AAR.

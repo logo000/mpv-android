@@ -13,6 +13,26 @@ else
 	exit 255
 fi
 
+# Apply any patch files staged in <repo-root>/patches/mpv/*.patch BEFORE
+# meson setup. Used to ship the ENCODING_AC3 / ENCODING_E_AC3 passthrough
+# additions to ao_audiotrack.c that upstream mpv has not adopted (see
+# README.md "Patches" section). Each patch is applied with `git apply
+# --check` then `git apply` so a partial state cannot wedge the build.
+patch_dir="$(realpath ../../../patches/mpv 2>/dev/null || true)"
+if [ -d "$patch_dir" ]; then
+	for p in "$patch_dir"/*.patch; do
+		[ -f "$p" ] || continue
+		# Idempotency: skip if already applied (e.g. re-run with cached deps)
+		if git apply --reverse --check "$p" >/dev/null 2>&1; then
+			echo ">> patch already applied: $(basename "$p")"
+			continue
+		fi
+		echo ">> applying patch: $(basename "$p")"
+		git apply --check "$p"
+		git apply "$p"
+	done
+fi
+
 unset CC CXX # meson wants these unset
 
 meson setup $build --cross-file "$prefix_dir"/crossfile.txt \
