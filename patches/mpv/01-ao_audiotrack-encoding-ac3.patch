@@ -1,5 +1,5 @@
 diff --git a/audio/out/ao_audiotrack.c b/audio/out/ao_audiotrack.c
-index f483ccc8e8..2d34c40e6f 100644
+index f483ccc8e8..fb2129ee54 100644
 --- a/audio/out/ao_audiotrack.c
 +++ b/audio/out/ao_audiotrack.c
 @@ -187,6 +187,8 @@ static struct JNIAudioFormat {
@@ -139,13 +139,13 @@ index f483ccc8e8..2d34c40e6f 100644
 +        p->format = 0;
 +        if (ao->format == AF_FORMAT_S_AC3 && AudioFormat.ENCODING_AC3) {
 +            p->format = AudioFormat.ENCODING_AC3;
-+            MP_VERBOSE(ao, "using ENCODING_AC3 direct passthrough\n");
++            MP_INFO(ao, "using ENCODING_AC3 direct passthrough\n");
 +        } else if (ao->format == AF_FORMAT_S_EAC3 && AudioFormat.ENCODING_E_AC3) {
 +            p->format = AudioFormat.ENCODING_E_AC3;
-+            MP_VERBOSE(ao, "using ENCODING_E_AC3 direct passthrough\n");
++            MP_INFO(ao, "using ENCODING_E_AC3 direct passthrough\n");
 +        } else if (AudioFormat.ENCODING_IEC61937 && AudioTrack.writeShortV23) {
 +            p->format = AudioFormat.ENCODING_IEC61937;
-+            MP_VERBOSE(ao, "using ENCODING_IEC61937 spdif-burst passthrough\n");
++            MP_INFO(ao, "using ENCODING_IEC61937 spdif-burst passthrough\n");
 +        }
 +        if (!p->format) {
 +            MP_ERR(ao, "spdif passthrough not supported by API "

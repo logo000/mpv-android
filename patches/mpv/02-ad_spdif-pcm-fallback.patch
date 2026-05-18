@@ -1,0 +1,94 @@
+diff --git a/audio/decode/ad_spdif.c b/audio/decode/ad_spdif.c
+index 2c0c8d2966..d9dca4ed98 100644
+--- a/audio/decode/ad_spdif.c
++++ b/audio/decode/ad_spdif.c
+@@ -92,7 +92,7 @@ static void ad_spdif_destroy(struct mp_filter *da)
+     mp_free_av_packet(&spdif_ctx->avpkt);
+ }
+ 
+-static void determine_codec_params(struct mp_filter *da, AVPacket *pkt,
++static bool determine_codec_params(struct mp_filter *da, AVPacket *pkt,
+                                    int *out_profile, int *out_rate)
+ {
+     struct spdifContext *spdif_ctx = da->priv;
+@@ -124,7 +124,7 @@ static void determine_codec_params(struct mp_filter *da, AVPacket *pkt,
+     }
+ 
+     if (profile != AV_PROFILE_UNKNOWN)
+-        return;
++        return true;
+ 
+     const AVCodec *codec = avcodec_find_decoder(spdif_ctx->codec_id);
+     if (!codec)
+@@ -163,6 +163,7 @@ done:
+ 
+     if (profile == AV_PROFILE_UNKNOWN)
+         MP_WARN(da, "Failed to parse codec profile.\n");
++    return profile != AV_PROFILE_UNKNOWN;
+ }
+ 
+ static int init_filter(struct mp_filter *da)
+@@ -173,9 +174,17 @@ static int init_filter(struct mp_filter *da)
+ 
+     int profile = AV_PROFILE_UNKNOWN;
+     int c_rate = 0;
+-    determine_codec_params(da, pkt, &profile, &c_rate);
++    bool params_ok = determine_codec_params(da, pkt, &profile, &c_rate);
+     MP_VERBOSE(da, "In: profile=%d samplerate=%d\n", profile, c_rate);
+ 
++    if (!params_ok && (spdif_ctx->codec_id == AV_CODEC_ID_AC3 ||
++                       spdif_ctx->codec_id == AV_CODEC_ID_EAC3))
++    {
++        MP_ERR(da, "Cannot initialize AC3/EAC3 passthrough from an "
++                   "unparseable first packet.\n");
++        goto fail;
++    }
++
+     AVFormatContext *lavf_ctx  = avformat_alloc_context();
+     if (!lavf_ctx)
+         goto fail;
+diff --git a/player/audio.c b/player/audio.c
+index b3e975dd2e..506daee975 100644
+--- a/player/audio.c
++++ b/player/audio.c
+@@ -517,6 +517,24 @@ init_error:
+     return -1;
+ }
+ 
++static bool fallback_spdif_to_pcm(struct MPContext *mpctx, const char *reason)
++{
++    struct ao_chain *ao_c = mpctx->ao_chain;
++    if (!ao_c || !ao_c->spdif_passthrough || !ao_c->track || !ao_c->track->dec)
++        return false;
++
++    MP_WARN(mpctx, "%s; falling back to PCM output.\n", reason);
++    ao_c->spdif_passthrough = false;
++    ao_c->spdif_failed = true;
++    mp_decoder_wrapper_set_spdif_flag(ao_c->track->dec, false);
++    if (!mp_decoder_wrapper_reinit(ao_c->track->dec))
++        return false;
++    reset_audio_state(mpctx);
++    mp_output_chain_reset_harder(ao_c->filter);
++    mp_wakeup_core(mpctx);
++    return true;
++}
++
+ int init_audio_decoder(struct MPContext *mpctx, struct track *track)
+ {
+     mp_assert(!track->dec);
+@@ -879,6 +897,15 @@ void fill_audio_out_buffers(struct MPContext *mpctx)
+     if (!ao_c)
+         return;
+ 
++    if (ao_c->track && ao_c->track->dec &&
++        mp_filter_has_failed(ao_c->track->dec->f))
++    {
++        if (fallback_spdif_to_pcm(mpctx, "Passthrough audio decoder failed"))
++            return;
++        error_on_track(mpctx, ao_c->track);
++        return;
++    }
++
+     if (ao_c->filter->failed_output_conversion) {
+         error_on_track(mpctx, ao_c->track);
+         return;
