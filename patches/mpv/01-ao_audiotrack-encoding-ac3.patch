@@ -1,5 +1,5 @@
 diff --git a/audio/out/ao_audiotrack.c b/audio/out/ao_audiotrack.c
-index f483ccc8e8..c7b41df098 100644
+index f483ccc8e8..2d34c40e6f 100644
 --- a/audio/out/ao_audiotrack.c
 +++ b/audio/out/ao_audiotrack.c
 @@ -187,6 +187,8 @@ static struct JNIAudioFormat {
@@ -154,3 +154,17 @@ index f483ccc8e8..c7b41df098 100644
              return -1;
          }
      } else if (ao->format == AF_FORMAT_U8) {
+@@ -710,7 +796,12 @@ static int init(struct ao *ao)
+         AudioFormat.CHANNEL_OUT_7POINT1_SURROUND,
+     };
+     static_assert(MP_ARRAY_SIZE(layout_map) == MP_ARRAY_SIZE(layouts), "");
+-    if (p->format == AudioFormat.ENCODING_IEC61937) {
++    if (p->format == AudioFormat.ENCODING_IEC61937 || is_passthrough_raw(p)) {
++        /* SPDIF wrapper (IEC61937) and raw codec passthrough (AC-3 / E-AC-3)
++         * both carry their own channel layout in the bitstream, so AudioTrack
++         * only needs a 2-channel carrier - mirroring VLC's well-tested
++         * passthrough approach. (Trying to pass CHANNEL_OUT_5POINT1 alongside
++         * ENCODING_AC3 makes some HDMI sinks reject the AudioTrack init.) */
+         p->channel_config = AudioFormat.CHANNEL_OUT_STEREO;
+     } else {
+         struct mp_chmap_sel sel = {0};
