@@ -2,8 +2,12 @@
 
 Patches in `mpv/` are applied to the upstream `mpv-player/mpv` source tree
 after `buildscripts/include/download-deps.sh` clones it (into
-`buildscripts/deps/mpv/`) and before `buildscripts/scripts/mpv.sh` runs
-`meson setup` + `ninja`.
+`buildscripts/deps/mpv/` and checks out the SHA pinned by `$v_mpv` in
+`buildscripts/include/depinfo.sh`) and before
+`buildscripts/scripts/mpv.sh` runs `meson setup` + `ninja`.
+
+**Pinned SHA:** `$v_mpv` in `depinfo.sh` controls the mpv checkout the
+patches were generated against. Bump it in lockstep with any patch re-roll.
 
 The application is automatic — `mpv.sh` walks every `*.patch` in
 `/patches/mpv/` and runs `git apply --check` then `git apply`. The check

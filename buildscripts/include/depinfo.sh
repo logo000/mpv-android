@@ -18,6 +18,10 @@ v_mbedtls=3.6.5
 v_libxml2=2.15.3
 v_fontconfig=2.17.1
 
+# mpv is pinned so the downstream patches in /patches/mpv/*.patch keep applying
+# cleanly. Bump in lockstep with any patch re-roll. As of 2026-05-17 master.
+v_mpv=059bc7025bb32a202f4ed5540daddf08aa9f73cc
+
 
 ## Dependency tree
 

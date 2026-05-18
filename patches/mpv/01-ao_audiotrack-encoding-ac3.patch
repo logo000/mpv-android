@@ -1,14 +1,156 @@
-# Patch placeholder — implementation pending.
-#
-# Target file:  audio/out/ao_audiotrack.c  (in mpv-player/mpv master,
-#               cloned by buildscripts into buildscripts/deps/mpv/)
-# Purpose:      Add ENCODING_AC3 / ENCODING_E_AC3 direct-AudioTrack paths
-#               on Android TV devices that don't implement ENCODING_IEC61937.
-# Spec:         /docs/handoff/2026-05-17-ao_audiotrack-ac3-passthrough.md
-#
-# The next chat that picks this up should produce a real unified diff
-# here (e.g. via `git diff` against the upstream master at
-# buildscripts/include/depinfo.sh's pinned ref). Until that diff is in
-# place, mpv.sh's `git apply --check` will fail loudly and the build
-# will stop — that's intentional, so an empty placeholder never silently
-# ships as a broken AAR.
+diff --git a/audio/out/ao_audiotrack.c b/audio/out/ao_audiotrack.c
+index f483ccc8e8..c7b41df098 100644
+--- a/audio/out/ao_audiotrack.c
++++ b/audio/out/ao_audiotrack.c
+@@ -187,6 +187,8 @@ static struct JNIAudioFormat {
+     jint ENCODING_PCM_16BIT;
+     jint ENCODING_PCM_FLOAT;
+     jint ENCODING_IEC61937;
++    jint ENCODING_AC3;
++    jint ENCODING_E_AC3;
+     jint CHANNEL_OUT_MONO;
+     jint CHANNEL_OUT_STEREO;
+     jint CHANNEL_OUT_FRONT_CENTER;
+@@ -202,6 +204,8 @@ static const struct MPJniField AudioFormat_mapping[] = {
+     {"ENCODING_PCM_16BIT", "I", MP_JNI_STATIC_FIELD_AS_INT, OFFSET(ENCODING_PCM_16BIT), 1},
+     {"ENCODING_PCM_FLOAT", "I", MP_JNI_STATIC_FIELD_AS_INT, OFFSET(ENCODING_PCM_FLOAT), 1},
+     {"ENCODING_IEC61937", "I", MP_JNI_STATIC_FIELD_AS_INT, OFFSET(ENCODING_IEC61937), 0},
++    {"ENCODING_AC3", "I", MP_JNI_STATIC_FIELD_AS_INT, OFFSET(ENCODING_AC3), 0},
++    {"ENCODING_E_AC3", "I", MP_JNI_STATIC_FIELD_AS_INT, OFFSET(ENCODING_E_AC3), 0},
+     {"CHANNEL_OUT_MONO", "I", MP_JNI_STATIC_FIELD_AS_INT, OFFSET(CHANNEL_OUT_MONO), 1},
+     {"CHANNEL_OUT_STEREO", "I", MP_JNI_STATIC_FIELD_AS_INT, OFFSET(CHANNEL_OUT_STEREO), 1},
+     {"CHANNEL_OUT_FRONT_CENTER", "I", MP_JNI_STATIC_FIELD_AS_INT, OFFSET(CHANNEL_OUT_FRONT_CENTER), 1},
+@@ -279,6 +283,21 @@ static const struct {
+ };
+ #undef ENTRY
+ 
++/* True when p->format is one of the raw codec passthrough encodings (AC-3 /
++ * E-AC-3) that AudioTrack accepts as elementary-stream bytes. Used to route
++ * the buffer-allocation, write, and position tracking paths the same way as
++ * the ENCODING_IEC61937 spdif-burst path but without the IEC61937 wrapper. */
++static inline bool is_passthrough_raw(struct priv *p)
++{
++    if (!p->format)
++        return false;
++    if (AudioFormat.ENCODING_AC3 && p->format == AudioFormat.ENCODING_AC3)
++        return true;
++    if (AudioFormat.ENCODING_E_AC3 && p->format == AudioFormat.ENCODING_E_AC3)
++        return true;
++    return false;
++}
++
+ static int AudioTrack_New(struct ao *ao)
+ {
+     struct priv *p = ao->priv;
+@@ -393,6 +412,7 @@ static uint32_t AudioTrack_getPlaybackHeadPosition(struct ao *ao)
+     int64_t wait = p->timestamp_stable < stable_count ? 50000000 : 3000000000;
+ 
+     if (state == AudioTrack.PLAYSTATE_PLAYING && p->format != AudioFormat.ENCODING_IEC61937 &&
++        !is_passthrough_raw(p) &&
+         (p->timestamp_fetched == 0 || now - p->timestamp_fetched >= wait)) {
+         if (!p->timestamp_fetched)
+             p->timestamp_stable = 0;
+@@ -432,7 +452,7 @@ static uint32_t AudioTrack_getPlaybackHeadPosition(struct ao *ao)
+     }
+ 
+ 
+-    if (p->format == AudioFormat.ENCODING_IEC61937) {
++    if (p->format == AudioFormat.ENCODING_IEC61937 || is_passthrough_raw(p)) {
+         if (p->reset_pending) {
+             // after a flush(), playbackHeadPosition will not reset to 0 right away.
+             // sometimes, it will never reset at all.
+@@ -476,7 +496,8 @@ static double AudioTrack_getLatency(struct ao *ao)
+     uint32_t diff = p->written_frames - playhead;
+     double delay = diff / (double)(ao->samplerate);
+     if (!p->timestamp_set &&
+-        p->format != AudioFormat.ENCODING_IEC61937)
++        p->format != AudioFormat.ENCODING_IEC61937 &&
++        !is_passthrough_raw(p))
+         delay += (double)MP_JNI_CALL_INT(p->audiotrack, AudioTrack.getLatency)/1000.0;
+     if (delay > 2.0) {
+         //MP_WARN(ao, "getLatency: written=%u playhead=%u diff=%u delay=%f\n", p->written_frames, playhead, diff, delay);
+@@ -502,6 +523,50 @@ static int AudioTrack_write(struct ao *ao, int len)
+         if (MP_JNI_EXCEPTION_LOG(ao) < 0) return -1;
+         if (ret > 0) ret *= 2;
+ 
++    } else if (is_passthrough_raw(p)) {
++        /* ao->buffer arrives wrapped by ad_spdif.c as an IEC61937 burst:
++         *   bytes [0..7]   - Pa Pb Pc Pd preamble (sync + data-type + length)
++         *   bytes [8..7+N] - raw codec frame, NOT byte-swapped (ffmpeg's
++         *                    spdifenc sets extra_bswap=1 for AC-3 / E-AC-3
++         *                    which inverts the SPDIF byte-swap, so the
++         *                    payload lands in native byte order)
++         *   bytes [8+N..]  - padding to spdif burst boundary (must be skipped)
++         *
++         * For ENCODING_AC3 / ENCODING_E_AC3 AudioTrack wants the raw codec
++         * elementary-stream bytes only. Strip the 8-byte preamble; recover
++         * the payload length from Pd (offset 6, 16-bit big-endian); shift
++         * the payload to the start of the DirectByteBuffer-backed chunk;
++         * write only `raw_len` bytes. */
++        uint8_t *bytes = buf;
++        if (len < 8) {
++            /* not even a full burst header in this chunk; drop */
++            return len;
++        }
++        unsigned data_type = (((unsigned)bytes[4]) << 8 | bytes[5]) & 0xFF;
++        unsigned pd_field = ((unsigned)bytes[6]) << 8 | bytes[7];
++        /* IEC61937_AC3 (0x01) advertises Pd as length-in-bits, divide by 8.
++         * IEC61937_EAC3 (0x15) advertises Pd directly as length-in-bytes. */
++        int header_type_mul = (data_type == 0x01) ? 8 : 1;
++        int raw_len = (int)(pd_field / header_type_mul);
++        if (raw_len <= 0 || raw_len > len - 8) {
++            /* malformed / truncated burst; skip the whole chunk */
++            return len;
++        }
++        /* Shift raw payload to the start of the DirectByteBuffer-mapped
++         * chunk so writeBufferV21 can read it from position 0. The
++         * ByteBuffer points directly at p->chunk via NewDirectByteBuffer. */
++        memmove(buf, bytes + 8, raw_len);
++        jobject bbuf = MP_JNI_CALL_OBJECT(p->bbuf, ByteBuffer.clear);
++        if (MP_JNI_EXCEPTION_LOG(ao) < 0) return -1;
++        MP_JNI_LOCAL_FREEP(&bbuf);
++        ret = MP_JNI_CALL_INT(p->audiotrack, AudioTrack.writeBufferV21,
++                              p->bbuf, raw_len, AudioTrack.WRITE_BLOCKING);
++        if (MP_JNI_EXCEPTION_LOG(ao) < 0) return -1;
++        /* Report the original burst length as "consumed" upstream so mpv's
++         * AO buffer accounting stays aligned to the spdif-wrapped input. */
++        if (ret == raw_len)
++            ret = len;
++
+     } else if (AudioTrack.writeBufferV21) {
+         // reset positions for reading
+         jobject bbuf = MP_JNI_CALL_OBJECT(p->bbuf, ByteBuffer.clear);
+@@ -658,9 +723,30 @@ static int init(struct ao *ao)
+         return -1;
+ 
+     if (af_fmt_is_spdif(ao->format)) {
+-        p->format = AudioFormat.ENCODING_IEC61937;
+-        if (!p->format || !AudioTrack.writeShortV23) {
+-            MP_ERR(ao, "spdif passthrough not supported by API\n");
++        /* Prefer direct AC-3 / E-AC-3 AudioTrack encodings when both the
++         * device API (AudioFormat.ENCODING_AC3 / ENCODING_E_AC3, API 21+)
++         * exposes them. Many Android TV HDMI sinks (Bravia, MiBox) advertise
++         * raw AC-3 in ACTION_HDMI_AUDIO_PLUG EXTRA_ENCODINGS but NOT
++         * ENCODING_IEC61937, so the existing IEC61937-only path silently
++         * falls back to decoded PCM. Fall back to ENCODING_IEC61937 for
++         * devices/sinks that prefer the spdif-burst wrapper (Shield,
++         * FireTV). See https://github.com/mpv-android/mpv-android/issues/93
++         */
++        p->format = 0;
++        if (ao->format == AF_FORMAT_S_AC3 && AudioFormat.ENCODING_AC3) {
++            p->format = AudioFormat.ENCODING_AC3;
++            MP_VERBOSE(ao, "using ENCODING_AC3 direct passthrough\n");
++        } else if (ao->format == AF_FORMAT_S_EAC3 && AudioFormat.ENCODING_E_AC3) {
++            p->format = AudioFormat.ENCODING_E_AC3;
++            MP_VERBOSE(ao, "using ENCODING_E_AC3 direct passthrough\n");
++        } else if (AudioFormat.ENCODING_IEC61937 && AudioTrack.writeShortV23) {
++            p->format = AudioFormat.ENCODING_IEC61937;
++            MP_VERBOSE(ao, "using ENCODING_IEC61937 spdif-burst passthrough\n");
++        }
++        if (!p->format) {
++            MP_ERR(ao, "spdif passthrough not supported by API "
++                       "(ao->format=%d, no AC3/EAC3/IEC61937 encoding "
++                       "available)\n", ao->format);
+             return -1;
+         }
+     } else if (ao->format == AF_FORMAT_U8) {
